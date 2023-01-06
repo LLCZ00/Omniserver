@@ -15,7 +15,7 @@ Installation
 
 .. code-block:: console
 
-	$ pip install dynabyte
+	$ pip install omniserver
 
 
 Contents

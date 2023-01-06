@@ -3,7 +3,7 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Dynabyte Documentation
+Omniserver Documentation
 =========================
 
 *Omniserver* is a Python module designed for quickly prototyping controllers/intercepting malicious network communications, and replicating various types of backdoor traffic. It is capable of quickly starting up highly customizable client and server objects, the goal being to provide maximum flexibility with the smallest amount of boilerplate code possible.

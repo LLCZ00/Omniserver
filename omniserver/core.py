@@ -16,83 +16,86 @@ omniserver.core:
 TODO:
     - 
 """
-from omniserver import servers, clients, certs
+from omniserver import servers, clients
 
 
 """ Server Initialization Functions
 """
 
-def tcp_server(port=0, ip='', Handler=servers.TCPHandler, tls=False, context=None, **kwargs):
+def tcp_server(port=0, ip='', *, RequestHandler=servers.TCPHandler, ServerHandler=servers.TCPServer, sslcontext=None):
     """Initialize TCPServer and return its manager object
     
     :param port: Port to listen on (Default: random high port)
     :type port: int
     :param ip: IP address to accept connections with (Default: 0.0.0.0)
     :type ip: str
-    :param Handler: servers.TCPHandler class or subclass to process requests with
-    :param tls: Attempt to wrap socket in SSL context
-    :type tls: bool
-    :param context: SSLContext to wrap socket with (If None, create context using **kwargs)
+    :param RequestHandler: servers.TCPHandler class or subclass to process requests with
+    :param ServerHandler: servers.TCPServer class or subclass to handle server socket
+    :param sslcontext: SSLContext to wrap socket with
     :type context: ssl.SSLContext
-    :param **kwargs: Keyword arguments passed to certs.create_server_context(), if tls enabled
 
-    :returns ServerManager: TCPServerManager object wrapped around TCPServer
+    :returns ServerManager: ServerManager object wrapped around TCPServer
     """        
-    server = servers.TCPServerManager(servers.TCPServer((ip, port), Handler))    
-    if tls:
-        if context is None:
-            context = certs.create_server_context(**kwargs)
+    server = servers.ServerManager(ServerHandler((ip, port), RequestHandler))    
+    if sslcontext:
         server.enable_ssl(context)
     return server
 
 
-def udp_server(port=0, ip='', Handler=servers.UDPHandler):
+def udp_server(port=0, ip='', *, RequestHandler=servers.UDPHandler, ServerHandler=servers.UDPServer):
     """Initialize UDPServer and return its manager object
     
     :param port: Port to listen on (Default: random high port)
     :type port: int
     :param ip: IP address to accept connections with (Default: 0.0.0.0)
     :type ip: str
-    :param Handler: servers.UDPHandler class or subclass to process requests with
+    :param RequestHandler: servers.UDPHandler class or subclass to process requests with
+    :param ServerHandler: servers.UDPServer class or subclass to handle server socket
     
     :returns ServerManager: ServerManager object wrapped around UDPServer
     """
-    return servers.ServerManager(servers.UDPServer((ip, port), Handler))
+    return servers.ServerManager(ServerHandler((ip, port), RequestHandler))
 
 
-def dns_tcp_server(port=53, ip='', Handler=servers.DNSHandlerTCP, default_ip=None, record=None, zonefile=None):
+def dns_tcp_server(port=53, ip='', *, RequestHandler=servers.DNSHandlerTCP, ServerHandler=servers.DNSServerTCP, default_ip=None, record=None, zonefile=None, sslcontext=None):
     """Initialize DNSServerTCP and return its manager object
     
     :param port: Port to listen on (Default: 53)
     :type port: int
     :param ip: IP address to accept connections with (Default: 0.0.0.0)
     :type ip: str
-    :param Handler: servers.DNSHandlerTCP class or subclass to process requests with
+    :param RequestHandler: servers.DNSHandlerTCP class or subclass to process requests with
+    :param ServerHandler: servers.DNSServerTCP class or subclass to handle server socket
     :param default_ip: Default IP address to answer DNS queries with, if not resolved by other means
     :type default_ip: str
     :param record: Zone-style DNS record to compare queries against
     :type record: str
     :param zonefile: Zone file of DNS records to populate server's records with
     :type zonefile: str
+    :param sslcontext: SSLContext to wrap socket with
+    :type sslcontext: ssl.SSLContext
     
     :returns ServerManager: ServerManager object wrapped around DNSServerTCP
     """        
-    server = servers.DNSServerManager(servers.DNSServerTCP((ip, port), Handler, default_ip=default_ip))
+    server = servers.ServerManager(ServerHandler((ip, port), RequestHandler, default_ip=default_ip))
     if zonefile:
         server.add_zonefile(zonefile)
     if record:
         server.add_record(record)
+    if sslcontext:
+        server.enable_ssl(context)
     return server
 
 
-def dns_server(port=53, ip='', Handler=servers.DNSHandler, default_ip=None, record=None, zonefile=None):
+def dns_server(port=53, ip='', *, RequestHandler=servers.DNSHandler, ServerHandler=servers.DNSServer, default_ip=None, record=None, zonefile=None):
     """Initialize DNSServerTCP and return its manager object
     
     :param port: Port to listen on (Default: 53)
     :type port: int
     :param ip: IP address to accept connections with (Default: 0.0.0.0)
     :type ip: str
-    :param Handler: servers.DNSHandler class or subclass to process requests with
+    :param RequestHandler: servers.DNSHandler class or subclass to process requests with
+    :param ServerHandler: servers.DNSServer class or subclass to handle server socket
     :param default_ip: Default IP address to answer DNS queries with, if not resolved by other means
     :type default_ip: str
     :param record: Zone-style DNS record to compare queries against
@@ -102,7 +105,7 @@ def dns_server(port=53, ip='', Handler=servers.DNSHandler, default_ip=None, reco
         
     :returns ServerManager: ServerManager object wrapped around DNSServer
     """        
-    server = servers.DNSServerManager(servers.DNSServer((ip, port), Handler, default_ip=default_ip))
+    server = servers.ServerManager(ServerHandler((ip, port), RequestHandler, default_ip=default_ip))
     if zonefile:
         server.add_zonefile(zonefile)
     if record:
@@ -110,28 +113,23 @@ def dns_server(port=53, ip='', Handler=servers.DNSHandler, default_ip=None, reco
     return server    
  
  
-def http_server(port=8080, ip='', Handler=servers.HTTPHandler, dir=None, tls=False, context=None, **kwargs):
+def http_server(port=8080, ip='', *, RequestHandler=servers.HTTPHandler, ServerHandler=servers.HTTPServer, dir=None, sslcontext=None):
     """Initialize HTTPServer and return its manager object
     
     :param port: Port to listen on (Default: 8080)
     :type port: int
     :param ip: IP address to accept connections with (Default: 0.0.0.0)
     :type ip: str
-    :param Handler: servers.HTTPHandler class or subclass to process requests with
+    :param RequestHandler: servers.HTTPHandler class or subclass to process requests with
+    :param ServerHandler: servers.HTTPServer class or subclass to handle server socket
     :param dir: Server's working directory (Default: CWD)
     :type dir: str
-    :param tls: Attempt to wrap socket in SSL context
-    :type tls: bool
-    :param context: SSLContext to wrap socket with (If None, create context using **kwargs)
-    :type context: ssl.SSLContext
-    :param **kwargs: Keyword arguments passed to certs.create_client_socket(), if tls enabled
-    
+    :param sslcontext: SSLContext to wrap socket with
+    :type context: ssl.SSLContext    
     :returns ServerManager: ServerManager object wrapped around HTTPHandler
     """
-    server = servers.TCPServerManager(servers.HTTPServer((ip, port), Handler, dir))
-    if tls:
-        if context is None:
-            context = certs.create_server_context(**kwargs)
+    server = servers.ServerManager(ServerHandler((ip, port), RequestHandler, dir))
+    if sslcontext:
         server.enable_ssl(context)
     return server   
 
@@ -140,101 +138,83 @@ def http_server(port=8080, ip='', Handler=servers.HTTPHandler, dir=None, tls=Fal
 """Client Initialization Functions
 """
 
-def tcp_client(remote_addr: tuple, Handler=clients.TCPClient, tls=False, context=None, hostname=None, **kwargs):
+def tcp_client(remote_addr: tuple, *, Handler=clients.TCPClient, sslcontext=None, hostname=None):
     """Initialize and return clients.TCPClient object
     
     :param remote_addr: IP address (or hostname) and port of remote socket
     :type remote_addr: tuple
     :param Handler: clients.TCPClient class or subclass to handle data exchange
     :type Handler: clients.TCPClient
-    :param tls: Attempt to wrap socket in SSL context
-    :type tls: bool
-    :param context: SSLContext to wrap socket with (If None, create context using **kwargs)
-    :type context: ssl.SSLContext
+    :param sslcontext: SSLContext to wrap socket with (If None, create context using **kwargs)
+    :type sslcontext: ssl.SSLContext
     :param hostname: Hostname of remote server (Required for SSL, unless hostname defined in remote_addr)
-    :type hostname: str    
-    :param **kwargs: Keyword arguments passed to certs.create_client_context(), if tls enabled
-    
+    :type hostname: str       
     :returns TCPClient: Client object for exchanging data with remote TCP server
     """
     client = Handler(remote_addr)
-    if tls:
-        if context is None:
-            context = certs.create_client_context(**kwargs)
-        client.enable_ssl(context, hostname)
+    if sslcontext:
+        client.enable_ssl(sslcontext, hostname)
     return client
 
 
-def udp_client(remote_addr: tuple, Handler=clients.UDPClient):
+def udp_client(remote_addr, *, Handler=clients.UDPClient):
     """Initialize and return clients.UDPClient object
     
     :param remote_addr: IP address (or hostname) and port of remote socket
     :type remote_addr: tuple
     :param Handler: clients.UDPClient class or subclass to handle data exchange
-    :type Handler: clients.UDPClient
-    
+    :type Handler: clients.UDPClient    
     :returns UDPClient: Client object for exchanging data with remote UDP server
     """
     return Handler(remote_addr)
 
 
-def dns_client(remote_addr: tuple, Handler=clients.DNSClient):
+def dns_client(remote_addr, *, Handler=clients.DNSClient):
     """Initialize and return clients.DNSClient object (UDP)
     
     :param remote_addr: IP address (or hostname) and port of remote socket
     :type remote_addr: tuple
     :param Handler: clients.DNSClient class or subclass to handle data exchange
-    :type Handler: clients.DNSClient
-    
+    :type Handler: clients.DNSClient   
     :returns DNSClient: Client object for sending queries to remote DNS server (UDP)
     """
-    return udp_client(remote_addr, Handler)
+    return Handler(remote_addr)
 
 
-def dns_tcp_client(remote_addr: tuple, Handler=clients.DNSClientTCP, tls=False, **kwargs):
+def dns_tcp_client(remote_addr, *, Handler=clients.DNSClientTCP, sslcontext=None):
     """Initialize and return clients.DNSClientTCP object (TCP)
     
     :param remote_addr: IP address (or hostname) and port of remote socket
     :type remote_addr: tuple
     :param Handler: clients.DNSClientTCP class or subclass to handle data exchange
     :type Handler: clients.DNSClientTCP
-    :param tls: Attempt to wrap socket in SSL context
-    :type tls: bool
-    :param **kwargs: Keyword arguments passed to certs.create_client_context(), if tls enabled
-    
+    :param sslcontext: SSLContext to wrap socket with (If None, create context using **kwargs)
+    :type sslcontext: ssl.SSLContext    
     :returns DNSClientTCP: Client object for sending queries to remote DNS server (TCP)
     """
-    return tcp_client(remote_addr, Handler, tls, **kwargs)
+    client = Handler(remote_addr)
+    if sslcontext:
+        client.enable_ssl(sslcontext, hostname)
+    return client
 
 
-def http_client(remote_addr: tuple, 
-    Handler=clients.HTTPClient, 
-    dir=None, 
-    tls: bool = False,
-    context=None,
-    hostname=None, 
-    **kwargs):
+def http_client(remote_addr, *, Handler=clients.HTTPClient, dir=None, sslcontext=None, hostname=None):
     """Initialize and return clients.HTTPClient object
     
     :param remote_addr: IP address (or hostname) and port of remote socket
+    :type remote_addr: tuple
     :param Handler: clients.HTTPClient class or subclass to handle data exchange
     :type Handler: clients.HTTPClient
     :param dir: Working directory (Default: CWD)
     :type dir: str
-    :param tls: Attempt to wrap socket in SSL context
-    :type tls: bool
-    :param context: SSLContext to wrap socket with (If None, create context using **kwargs)
-    :type context: ssl.SSLContext
+    :param sslcontext: SSLContext to wrap socket with (If None, create context using **kwargs)
+    :type sslcontext: ssl.SSLContext
     :param hostname: Hostname of remote server (Required for SSL, unless hostname defined in remote_addr)
     :type hostname: str
-    :param **kwargs: Keyword arguments passed to certs.create_client_socket(), if tls enabled
-    
     :returns HTTPClient: Client object for exchanging data with remote web server (via GET and POST requests)
     """
     client = Handler(remote_addr, dir)
-    if tls:
-        if context is None:
-            context = certs.create_client_context(**kwargs)
+    if sslcontext:
         client.enable_ssl(context, hostname)
     return client
 

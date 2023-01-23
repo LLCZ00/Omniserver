@@ -26,43 +26,151 @@ TODO:
 
 """    
 import socketserver
+import socket
 import threading
-import logging
 import sys
+import os
 from time import sleep
-from http.server import SimpleHTTPRequestHandler
 from dnslib import DNSRecord,RR,A,RCODE,QTYPE
-from omniserver import certs
+from http.server import SimpleHTTPRequestHandler
 
 from omniserver.version import __version__
 
 __all__ = ["TCPHandler", "UDPHandler", "DNSHandlerTCP",
             "DNSHandler", "HTTPHandler"]
 
-"""RequestHandler Base Classes
-- Inherited by RequestHandler subclasses in omniserver.servers to provide overridable data handling methods
+"""Base Classes
+- Inherited by RequestHandler and Server subclasses in omniserver.servers to provide overridable data handling methods
 """
-class BaseRequestHandler(socketserver.BaseRequestHandler):
-    """Base class containing overridable methods for handling socket requests, extending socketserver.BaseRequestHandler
-    
-    Meant to be inherited by TCP/UDP RequestHandler classes, who shall override 
-    send() and recv() with their specific implimentations. The send/recv and 
-    send_data/recv_data methods are seperated so as to easily allow for bypassing the 
-    incoming/outgoing filter methods, if necessary.
+
+class ThreadedBaseServer(socketserver.ThreadingMixIn, socketserver.BaseServer):
+    """Base class for TCP and UDP server classes
     """
-    proto = ""
-    
-    def setup(self):
-        """Called by socketserver before handle()
-        """
-        self.client = f"[{self.client_address[0]}:{self.client_address[1]}]"
+    allow_reuse_address = True
+    proto = "Generic"
+    verbose=True
+    def __init__(self, server_address, RequestHandlerClass):
+        super().__init__(server_address, RequestHandlerClass)
+        self.active = False
         
+    def __str__(self):
+        return f"{self.proto} Server {self.server_address[0]}:{self.server_address[1]}"
+        
+    def activate(self):
+        """Bind socket and activate server
+        """
+        if not self.active: # Don't call bind or server_activate if they've already been called (error)
+            try:
+                self.server_bind()
+                self.server_activate() # Enable listening
+            except:
+                self.server_close()
+                print(f"{self} Binding/activation failed")
+                raise
+            else:
+                self.active = True
+                if self.verbose:
+                    print(f"{self} started...")
+                    
+    def serve_forever(self, poll_interval=0.5):
+        """Overriding socketserver method to ensure socket
+        is activated
+        """
+        if not self.active:
+            self.activate()
+        try:
+            super().serve_forever(poll_interval)
+        except KeyboardInterrupt: # CTRL-C to exit without raising errors
+            self.shutdown()
+        
+    def handle_request(self):
+        """Handle one request, overriding socketserver
+        method to ensure socket is activated
+        """
+        if not self.active:
+            self.activate()
+        super().handle_request()
+ 
+
+class BaseRequestHandler:
+    """Base class for RequestHandler classes, basically an extension 
+    of socketserver.BaseRequestHandler
+    
+    Sub classes must override send() and recv() with their protocol-specific implimentation.
+    The send/recv and send_data/recv_data methods are seperated so as to easily allow 
+    for bypassing the incoming/outgoing filter methods, if necessary.
+    """
+    keepalive = True
+    def __init__(self, request, client_address, server):
+        self.request = request
+        self.client_address = client_address
+        self.server = server
+        self.proto = server.proto if hasattr(server, "proto") else ""
+        self.verbose = server.verbose if hasattr(server, "verbose") else True
+        
+        self.setup()
+        try:
+            self.handle()
+        finally:
+            self.finish()
+            
+    def setup(self):
+        """Called before handle
+        """
+        pass
+        
+    def handle(self):
+        """Called by socketserver upon connection/request
+        
+        Keeps connection alive with client if 'keepalive' is
+        True, otherwise connection is closed between each request.
+        Overriding is not necessary, unless you don't want to use
+        the typical 'recv, send' communication pattern.
+        """        
+        try:
+            while True:
+                data = self.recv_data()
+                if not data:
+                    break   
+                response = self.response(data)
+                self.send_data(response)
+                if not self.keepalive:
+                    break
+        except Exception as e:
+            print(f"Exception occured within {self.proto} server")
+            if self.verbose:
+                print(e)
+        
+    def finish(self):
+        """Called after handle
+        """
+        pass
+            
     def send(self, data):
         """Override with protocol/use specific send method
         
         Use directly to bypass outgoing()
         """
         raise NotImplementedError
+        
+    def outgoing(self, resp): # Encode data to be sent
+        """Process outgoing response/data before it's sent
+        
+        Default: encode data and add newline
+        """
+        if type(resp) is not bytes:
+            resp = f"{resp}\n".encode("utf-8")
+        return resp
+        
+    def send_data(self, resp):
+        """Main method to be used for sending data
+        
+        Sends data after it's passed through outgoing()
+        """
+        resp = self.outgoing(resp)
+        if self.verbose:
+            print(f"[{self.client_address[0]}:{self.client_address[1]}] {self.proto} data sent.")
+        self.send(resp)
         
     def recv(self):
         """Override with protocol/use specific recv method
@@ -81,16 +189,7 @@ class BaseRequestHandler(socketserver.BaseRequestHandler):
         except:
             pass
         return data.strip()
-        
-    def outgoing(self, resp): # Encode data to be sent
-        """Process outgoing response/data before it's sent
-        
-        Default: encode data and add newline
-        """
-        if type(resp) is not bytes:
-            resp = f"{resp}\n".encode("utf-8")
-        return resp
-        
+    
     def recv_data(self):
         """Main method to be used for recieving data
         
@@ -98,252 +197,30 @@ class BaseRequestHandler(socketserver.BaseRequestHandler):
         """
         data = self.incoming(self.recv())
         if data:
-            logging.info(f"{self.client} {self.proto} data recieved: {data}")
-        return data
-        
-    def send_data(self, resp):
-        """Main method to be used for sending data
-        
-        Sends data after it's passed through outgoing()
-        """
-        self.send(self.outgoing(resp))
-        logging.info(f"{self.client} Response sent.")
+            if self.verbose:
+                print(f"[{self.client_address[0]}:{self.client_address[1]}] {self.proto} data recieved: {data}")
+            return data
         
     def response(self, data):
-        """Return response to be sent to client
+        """Recieves data processed by incoming(), returns 
+        response data to be processed by outgoing()
         
         Called by handle()
         """
         return f"Default {self.proto} response"
 
 
-""" RequestHandler and Server Classes
-- RequestHandler classes can be subclasses and passed to Server class
-- Servers accept RequestHandlers upon initialization
-- All servers threading capable
-"""
-
-# UDP #
-
-class TCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    """Threaded TCP server class 
-    
-    Extends the functionality of socketserver.TCPServer.
-    Passes requests to given RequestHandler class.
-    TLS/SSL compatible.
-    """
-    allow_reuse_address = True
-    proto = "TCP"
-    def __init__(self, server_address, RequestHandlerClass):
-        super().__init__(server_address, RequestHandlerClass, bind_and_activate=False)
-        
-    def __str__(self):
-        server_addr = self.socket.getsockname()
-        return f"{self.proto} Server {server_addr[0]}:{server_addr[1]}"
-        
-    def bind_and_activate(self):
-        """Bind socket and activate the server
-        """
-        try:
-            self.server_bind()
-            self.server_activate()
-        except:
-            self.server_close()
-            logging.error(f"Binding/activation failed")
-            raise
-        logging.info(f"[OMNI] Started {self}")
-            
-    def enable_ssl(self, context):
-        """Enable TLS/SSL on server socket
-        
-        :param context: SSLContext to wrap socket with (required)
-        :rtype: bool
-        """
-        try:
-            self.socket = context.wrap_socket(self.socket, server_side=True)
-        except Exception as e:
-            logging.exception("TLS/SSL failed.")
-            raise e
-        self.proto = f"{self.proto} (SSL)"
-        return True
-        
-    def shutdown(self):
-        """Stops serve_forever loop
-        """
-        super().shutdown()
-        logging.info(f"[OMNI] {self} closed.")
-
-
-class TCPHandler(BaseRequestHandler):
-    """Handler class for TCP server connections/requests
-    """
-    proto="TCP"
-    
-    def setup(self):
-        """Called by socketserver before handle()
-        """
-        self.client = f"[{self.client_address[0]}:{self.client_address[1]}]"
-        logging.info(f"{self.client} {self.proto} connection established.")        
-        
-    def send(self, data):
-        """Protocol specific method for sending data to remote socket
-        
-        Called by send_data(), after it passes the data through self.outgoing()
-        
-        :param data: Data to be sent to remote socket
-        """
-        self.request.sendall(data)       
-        
-    def recv(self, buffer: int = 1024):
-        """Protocol specific method for recieving data to remote socket
-        
-        Called by recv_data()
-        
-        :param buffer: Size of recieve buffer
-        :type buffer: int
-        :returns data: Data recieved, after being processed through self.incoming()
-        """
-        return self.request.recv(buffer)
-
-    def handle(self):
-        """Called by socketserver upon connection/request
-        """        
-        try:
-            while True:
-                data = self.recv_data()
-                if not data:
-                    break   
-                response = self.response(data)
-                self.send_data(response)               
-        except Exception as e:
-            logging.exception(f"Exception occured within {self.proto} server")            
-        
-    def finish(self):
-        """socketserver.BaseRequestHandler.finish(), called after handle()
-        """
-        logging.info(f"{self.client} Connection closed.")
-
-
-# UDP #
-
-class UDPServer(socketserver.ThreadingMixIn, socketserver.UDPServer):
-    """Threaded UDP server class 
-    
-    Extends the functionality of socketserver.UDPServer.
-    Passes requests to given RequestHandler class.
-    """
-    allow_reuse_address = True
-    proto = "UDP"
-    def __init__(self, server_address, RequestHandlerClass):
-        super().__init__(server_address, RequestHandlerClass, bind_and_activate=False)
-        
-    def __str__(self):
-        server_addr = self.socket.getsockname()
-        return f"{self.proto} Server {server_addr[0]}:{server_addr[1]}"
-        
-    def bind_and_activate(self):
-        """Bind socket and activate the server
-        """
-        try:
-            self.server_bind()
-            self.server_activate()
-        except:
-            self.server_close()
-            logging.error(f"Binding/activation failed")
-            raise
-        logging.info(f"[OMNI] Started {self}")
-
-    def shutdown(self):
-        """Stops serve_forever loop
-        """
-        super().shutdown()
-        logging.info(f"[OMNI] {self} closed.")
-
-
-class UDPHandler(BaseRequestHandler):
-    """Handler class for UDP server requests
-    """
-    proto = "UDP"
-    
-    def send(self, data):
-        """Protocol specific method for sending data to remote socket
-        
-        Called by send_data(), after it passes the data through self.outgoing()
-        
-        :param data: Data to be sent to remote socket
-        """
-        self.request[1].sendto(data, self.client_address)
-        
-    def recv(self):
-        """Protocol specific method for recieving data to remote socket
-        
-        Called by recv_data(), which passes the returned data through self.incoming()
-        
-        :returns data: Data recieved from remote socket
-        """
-        return self.request[0].strip()
-        
-    def handle(self):
-        """Called by socketserver upon recieving UDP data
-        """
-        try:
-            data = self.recv_data()
-            if data:
-                response = self.response(data)
-                self.send_data(response)                
-        except Exception as e:
-            logging.exception(f"Exception occured within {self.proto} server")
-
-
-# DNS #
-
-class BaseDNSServer:
-    """MixIn class with DNS-specific methods to extend TCP/UDP ServerClasses
-    """
-    def set_default_ip(self, ip):
-        """Set default IP for unresolved A record queries
-        
-        :param ip: IP address
-        :type ip: str
-        """
-        self.default_ip = ip
-         
-    def add_record(self, zone_record):
-        """Add zone-style record to compare incoming queries against
-        
-        Ex: "google.com 60 IN A 192.168.100.1"
-        
-        :param zone_record: DNS zone record string to add to server's 'record'
-        :type zone_record: str
-        """
-        self.records.append(*RR.fromZone(zone_record))
-        
-    def add_zonefile(self, zonefile):
-        """Add all DNS records from given DNS zone file
-        
-        :param zonefile: Path to file containing zone records
-        :type zonefile: str
-        """
-        with open(zonefile) as file:
-            rrs = RR.fromZone(file)
-            for rr in rrs:
-                self.records.append(rr)
-
-
-class DNSRequestMixIn:
-    """MixIn class to extend BaseRequestHandler TCP or UDP subclasses with DNS-specific methods
+class DNSRequestHandler(BaseRequestHandler):
+    """RequestHandler class to extend BaseRequestHandler with DNS-specific methods
     
     Declares self.records and self.default_ip
     """
-    def setup(self):
-        """
-        Called by socketserver before handle()
-        - Do not override
-        """
-        self.client = f"[{self.client_address[0]}:{self.client_address[1]}]"
-        self.records = self.server.records
-        self.default_ip = self.server.default_ip
-        
+    keepalive=False
+    def __init__(self, request, client_address, server):
+        self.default_ip = server.default_ip if hasattr(server, "default_ip") else None
+        self.records = server.records if hasattr(server, "records") else None
+        super().__init__(request, client_address, server)
+  
     def incoming(self, data):
         """
         Parses recieved data and returns dnslib.DNSRecord object
@@ -361,17 +238,6 @@ class DNSRequestMixIn:
         if type(resp) is not bytearray:
             resp = resp.pack()
         return resp
-        
-    def default(self, reply):
-        """
-        Default action if DNS query fails to resolve
-        - Returns dnslib.DNSRecord object
-        """
-        if self.default_ip and (reply.q.qtype == QTYPE.A or reply.q.qtype == QTYPE.AAAA):
-            reply.add_answer(RR(str(reply.q.qname), QTYPE.A, rdata=A(self.default_ip), ttl=60))            
-        else: # Add other record types here
-            reply.header.rcode = RCODE.NXDOMAIN # "Could not be resolved"
-        return reply
 
     def response(self, request):
         """
@@ -383,7 +249,10 @@ class DNSRequestMixIn:
         if self.records:
             reply = self.resolve_from_zone(reply, self.records)            
         if not reply.rr:
-            reply = self.default(reply)        
+            if self.default_ip and (reply.q.qtype == QTYPE.A or reply.q.qtype == QTYPE.AAAA):
+                reply.add_answer(RR(str(reply.q.qname), QTYPE.A, rdata=A(self.default_ip), ttl=60))            
+            else: # Add other record types here
+                reply.header.rcode = RCODE.NXDOMAIN # "Could not be resolved"       
         return reply
         
     def resolve_from_zone(self, request, records): # Maybe fold into Resolver class
@@ -416,13 +285,120 @@ class DNSRequestMixIn:
         
         Sends data after it's passed through outgoing()
         """
-        if resp.rr:
-           logging.info(f"{self.client} Query/response: {QTYPE[resp.q.qtype]} {resp.q.qname} -> {resp.get_a().rdata}")  
+        if resp.rr and self.verbose:
+           print(f"[{self.client_address[0]}:{self.client_address[1]}] Query/response: {QTYPE[resp.q.qtype]} {resp.q.qname} -> {resp.get_a().rdata}")  
         self.send(self.outgoing(resp))
 
+""" RequestHandler and Server Classes
+- RequestHandler classes can be subclasses and passed to Server class
+- Servers accept RequestHandlers upon initialization
+- All servers threading capable
+"""
+
+# UDP #
+
+class TCPServer(ThreadedBaseServer, socketserver.TCPServer):
+    """Threaded TCP server class, TLS/SSL compatible
+    
+    Listens for and accepts requests from remote TCP clients,
+    passes requests to given RequestHandler class.
+    """
+    proto = "TCP"
+    def __init__(self, server_address, RequestHandlerClass):
+        """Constructor.  May be extended, do not override."""
+        ThreadedBaseServer.__init__(self, server_address, RequestHandlerClass)
+        self.socket = socket.socket(self.address_family, self.socket_type)
+                
+    def enable_ssl(self, context):
+        """Enable TLS/SSL on server socket
+        
+        :param context: SSLContext to wrap socket with (required)
+        :rtype: bool
+        """
+        try:
+            self.socket = context.wrap_socket(self.socket, server_side=True)
+        except Exception as e:
+            print("TLS/SSL failed.")
+            raise e
+        self.proto = f"{self.proto} (SSL)"
+        return True
 
 
-class DNSServerTCP(TCPServer, BaseDNSServer):
+class TCPHandler(BaseRequestHandler):
+    """Handler class for TCP server connections/requests
+    
+    Overridable methods:
+    - incoming
+    - outgoing
+    - response
+    """
+    def send(self, data):
+        """Protocol specific method for sending data to remote socket
+        
+        Called by send_data(), after it passes the data through self.outgoing()
+        
+        :param data: Data to be sent to remote socket
+        """
+        self.request.sendall(data)       
+        
+    def recv(self, buffer: int = 1024):
+        """Protocol specific method for recieving data to remote socket
+        
+        Called by recv_data()
+        
+        :param buffer: Size of recieve buffer
+        :type buffer: int
+        :returns data: Data recieved, after being processed through self.incoming()
+        """
+        return self.request.recv(buffer)
+
+
+# UDP #
+
+class UDPServer(ThreadedBaseServer, socketserver.UDPServer):
+    """Threaded UDP server class 
+    
+    Extends the functionality of socketserver.UDPServer.
+    Passes requests to given RequestHandler class.
+    """
+    proto = "UDP"
+    def __init__(self, server_address, RequestHandlerClass):
+        """Constructor.  May be extended, do not override."""
+        ThreadedBaseServer.__init__(self, server_address, RequestHandlerClass)
+        self.socket = socket.socket(self.address_family, self.socket_type)
+
+
+class UDPHandler(BaseRequestHandler):
+    """Handler class for UDP server requests
+    
+    Overridable methods:
+    - incoming
+    - outgoing
+    - response
+    """
+    keepalive = False
+    def send(self, data):
+        """Protocol specific method for sending data to remote socket
+        
+        Called by send_data(), after it passes the data through self.outgoing()
+        
+        :param data: Data to be sent to remote socket
+        """
+        self.request[1].sendto(data, self.client_address)
+        
+    def recv(self):
+        """Protocol specific method for recieving data to remote socket
+        
+        Called by recv_data(), which passes the returned data through self.incoming()
+        
+        :returns data: Data recieved from remote socket
+        """
+        return self.request[0].strip()
+
+
+# DNS #
+
+class DNSServerTCP(TCPServer):
     """ Threaded DNS Server (TCP)
     
     Subclass of omniserver.servers.TCPServer that declares self.default_ip and self.record,
@@ -430,13 +406,34 @@ class DNSServerTCP(TCPServer, BaseDNSServer):
     omniserver.servers.BaseDNSServer, general server functions from omniserver.servers.TCPServer
     """
     proto = "DNS (TCP)"
-    def __init__(self, server_address, RequestHandlerClass, default_ip: str = None):
+    def __init__(self, server_address, RequestHandlerClass, default_ip=None):
         super().__init__(server_address, RequestHandlerClass)
         self.default_ip = default_ip
-        self.records = []
+        self.records = []  
+         
+    def add_record(self, zone_record):
+        """Add zone-style record to compare incoming queries against
+        
+        Ex: "google.com 60 IN A 192.168.100.1"
+        
+        :param zone_record: DNS zone record string to add to server's 'record'
+        :type zone_record: str
+        """
+        self.records.append(*RR.fromZone(zone_record))
+        
+    def add_zonefile(self, zonefile):
+        """Add all DNS records from given DNS zone file
+        
+        :param zonefile: Path to file containing zone records
+        :type zonefile: str
+        """
+        with open(zonefile) as file:
+            rrs = RR.fromZone(file)
+            for rr in rrs:
+                self.records.append(rr)
 
 
-class DNSHandlerTCP(DNSRequestMixIn, TCPHandler):
+class DNSHandlerTCP(DNSRequestHandler):
     """Handler class for DNS server requests (TCP)
      
     Must be used to exchange information larger than 512 bytes.
@@ -444,9 +441,13 @@ class DNSHandlerTCP(DNSRequestMixIn, TCPHandler):
     response() can be further overriden to customize DNS resolution method. 
     self.records and self.default_ip inherited from DNSBaseHandler
     """
-    proto = "DNS (TCP)"
-    
     def recv(self):
+        """Protocol specific method for recieving data to remote socket
+        
+        Called by recv_data(), which passes the returned data through self.incoming()
+        
+        :returns data: Data recieved from remote socket
+        """
         data = self.request.recv(8192).strip()
         sz = struct.unpack('>H', data[:2])[0]
         if sz < len(data) - 2:
@@ -455,12 +456,18 @@ class DNSHandlerTCP(DNSRequestMixIn, TCPHandler):
             raise Exception("Too big TCP packet")
         return data[2:]
 
-    def send(self, resp):
+    def send(self, data):
+        """Protocol specific method for sending data to remote socket
+        
+        Called by send_data(), after it passes the data through self.outgoing()
+        
+        :param data: Data to be sent to remote socket
+        """
         sz = struct.pack('>H', len(data))
         self.request.sendall(sz + data)
 
 
-class DNSServer(UDPServer, BaseDNSServer):
+class DNSServer(UDPServer):
     """Threaded DNS Server (UDP)
     
     Subclass of omniserver.servers.UDPServer that declares self.default_ip and self.record,
@@ -468,24 +475,56 @@ class DNSServer(UDPServer, BaseDNSServer):
     omniserver.servers.BaseDNSServer, general server functions from omniserver.servers.UDPServer
     """
     proto = "DNS"
-    def __init__(self, server_address, RequestHandlerClass, default_ip: str = None):
+    def __init__(self, server_address, RequestHandlerClass, default_ip=None):
         super().__init__(server_address, RequestHandlerClass)
         self.default_ip = default_ip
         self.records = []
+         
+    def add_record(self, zone_record):
+        """Add zone-style record to compare incoming queries against
+        
+        Ex: "google.com 60 IN A 192.168.100.1"
+        
+        :param zone_record: DNS zone record string to add to server's 'record'
+        :type zone_record: str
+        """
+        self.records.append(*RR.fromZone(zone_record))
+        
+    def add_zonefile(self, zonefile):
+        """Add all DNS records from given DNS zone file
+        
+        :param zonefile: Path to file containing zone records
+        :type zonefile: str
+        """
+        with open(zonefile) as file:
+            rrs = RR.fromZone(file)
+            for rr in rrs:
+                self.records.append(rr)
 
 
-class DNSHandler(DNSRequestMixIn, UDPHandler):
+class DNSHandler(DNSRequestHandler):
     """Handler class for DNS server requests (UDP)
      
     DNSRequestMixIn overrides incoming(), outgoing(), and response(). 
     response() can be further overriden to customize DNS resolution method. 
     self.records and self.default_ip inherited from DNSBaseHandler
-    """
-    proto = "DNS"
+    """        
     def recv(self):
+        """Protocol specific method for recieving data to remote socket
+        
+        Called by recv_data(), which passes the returned data through self.incoming()
+        
+        :returns data: Data recieved from remote socket
+        """
         return self.request[0].strip()
         
     def send(self, data):
+        """Protocol specific method for sending data to remote socket
+        
+        Called by send_data(), after it passes the data through self.outgoing()
+        
+        :param data: Data to be sent to remote socket
+        """
         self.request[1].sendto(data, self.client_address)
 
 
@@ -498,13 +537,13 @@ class HTTPServer(TCPServer):
     TLS/SSL compatible.
     """
     proto = "HTTP"
-    def __init__(self, server_address, RequestHandlerClass, dir: str = None):
+    server_version = "OmniHTTP/" + __version__
+    def __init__(self, server_address, RequestHandlerClass, dir=None):
         super().__init__(server_address, RequestHandlerClass)
-        self.working_dir = dir
+        self.working_dir = os.getcwd() if dir is None else dir
         
     def __str__(self):
-        server_addr = self.socket.getsockname()
-        return f"{self.proto} Server {self.proto.lower()}://{server_addr[0]}:{server_addr[1]}/"
+        return f"{self.proto} Server {self.proto.lower()}://{self.server_address[0]}:{self.server_address[1]}/"
         
     def finish_request(self, request, client_address):
         self.RequestHandlerClass(request, client_address, self, directory=self.working_dir)
@@ -512,33 +551,36 @@ class HTTPServer(TCPServer):
     def enable_ssl(self, context):
         if super().enable_ssl(context):
             self.proto = "HTTPS"
+            return True
+        return False
 
 
 class HTTPHandler(SimpleHTTPRequestHandler):
-    """Handler class for HTTP/S server requests
+    """Handler class for HTTP/S server connections/requests
     
-    Basic subclass of http.server.SimpleHTTPRequestHandler
     """
-    server_version = "OmniHTTP/" + __version__
-    proto = "HTTP"
-    
     def log_message(self, format, *args):
         """Log arbitrary message
-        
+
         Overriding BaseHTTPRequestHandler to keep
         all Omniserver logs in the same basic style.
         """
         message = format % args
-        logging.info(f"[{self.client_address[0]}:{self.client_address[1]}] {message}")
+        print(f"[{self.client_address[0]}:{self.client_address[1]}] {message}")
     
     
 
 """ Server Management
 - Classes and functions for starting, stoping, and waiting on threaded servers
-- Newly created server objects are appended to the active_servers list,
-    so they can all be started or stopped at once
+- Newly created server objects are appended to the init_servers list,
+    so they can be started, stopped, or waited on all at once
+    
+TODO:
+    - Make ServerManager class more comprehensive as a wrapper
+        - https://stackoverflow.com/questions/9057669/how-can-i-intercept-calls-to-pythons-magic-methods-in-new-style-classes/9059858#9059858
 """
-active_servers = [] 
+init_servers = [] # All initialized servers
+active_servers = [] # Servers that have been started with start() or start_all()
 
 class ServerManager:
     """Wrapper class for ThreadedServer objects
@@ -548,41 +590,46 @@ class ServerManager:
     """ 
     def __init__(self, ServerClass):
         self.server = ServerClass
-        active_servers.append(self)
-    
-    def start(self, thread=True, daemon=True):
-        """Create and start server process (blocking) or thread (non-blocking, default)
+        init_servers.append(self)
+        self.thread = None
         
-        :param thread: Start server in its own thread (Non-blocking)
-        :type thread: bool
+    def __str__(self):
+        return str(self.server)
+        
+    def __getattr__(self, attr):
+        """Provides proxy access to the server objects functions/attributes
+        """
+        return getattr(self.server, attr)
+    
+    def start(self, daemon=True):
+        """Create and start server process thread (non-blocking)
+        
         :param daemon: Daemonize thread
         :type daemon: bool
         """
-        self.server.bind_and_activate()
-
-        if thread:
-            server_thread = threading.Thread(target=self.server.serve_forever, daemon=daemon)
-            server_thread.start()            
-        else:
-            try:
-                print("(Ctrl-C to exit)\n") # Won't print if below
-                self.server.serve_forever()                
-            except KeyboardInterrupt:
-                pass
-            finally:
-                self.stop()                
+        if self.thread is not None: # Do nothing if thread has already been started
+            return
+        self.server.activate()
+        active_servers.append(self)
+        
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=daemon)
+        self.thread.start() # Thread object available for whatever
         return self # Returning self so wait() method can be used on same line
             
-    def wait(self):
+    def wait(self, interrupt=KeyboardInterrupt):
         """Wait (block) for server thread, shutdown upon interrupt
+        
+        :param interrupt: Exception to trigger the shutdown of active thread
         """
+        if self.thread is None: # Do nothing if no thread has been started
+            return
         print("(Ctrl-C to exit)\n")
         try:
             while 1:
                 sleep(1)
                 sys.stderr.flush()
                 sys.stdout.flush()
-        except KeyboardInterrupt:
+        except interrupt:
             pass
         finally:
             self.stop()
@@ -592,44 +639,7 @@ class ServerManager:
         """
         self.server.shutdown()
         active_servers.remove(self)
-
-
-class TCPServerManager(ServerManager):
-    """ServerManager extended with TCP specific functions
-    """
-    def enable_ssl(self, context):
-        return self.server.enable_ssl(context)
-
-class DNSServerManager(ServerManager):
-    """ServerManager extended with DNS specific wrapper functions
-    """
-
-    def add_record(self, *records: str):
-        """Add zone-style record to compare incoming queries against
-        
-        Ex: "google.com 60 IN A 192.168.100.1"
-        
-        :param zone_record: DNS zone record string to add to server's 'record'
-        :type zone_record: str
-        """
-        for record in records:
-            self.server.add_record(record)
-        
-    def add_zonefile(self, zonefile: str):
-        """Add all DNS records from given DNS zone file
-        
-        :param zonefile: Path to file containing zone records
-        :type zonefile: str
-        """
-        self.server.add_zonefile(zonefile)
-        
-    def set_default_ip(self, ip):
-        """Set default IP for unresolved A record queries
-        
-        :param ip: IP address
-        :type ip: str
-        """
-        self.server.default_ip = ip
+        self.thread = None
 
 
 """Functions for controlling all active servers
@@ -638,12 +648,9 @@ class DNSServerManager(ServerManager):
 def stop_all():
     """Shutdown all currently active server threads
     """
-    if len(active_servers) == 0:
-        return
-    while len(active_servers) != 0:
-        for server in active_servers: # Makin sure all them things close
+    if len(active_servers) > 0:
+        for server in active_servers:
             server.stop()
-    logging.info("[OMNI] All servers shut down.")    
 
 def wait_all(interrupt=KeyboardInterrupt): # Might replace with signals
     """ Wait indefinetly to allow all non-blocking threads to operate
@@ -651,9 +658,10 @@ def wait_all(interrupt=KeyboardInterrupt): # Might replace with signals
     Shutdown all servers upon triggering interrupt
     
     :param interrupt: Exception to trigger the shutdown of all active threads
-    :param stop: 
     """
     print("(Ctrl-C to exit)\n")
+    if len(active_servers) <= 0: # Don't wait if no servers are started
+        return
     try:
         while 1:
             sleep(1)
@@ -670,8 +678,8 @@ def start_all(wait=True):
     :param wait: Wait (block) until interrupt is triggered, then shutdown all active servers
     :type wait: bool
     """
-    if len(active_servers) > 0:
-        for server in active_servers:
+    if len(init_servers) > 0:
+        for server in init_servers:
             server.start()
         if wait:
             wait_all()

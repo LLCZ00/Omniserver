@@ -22,7 +22,6 @@ TODO:
     - Add CSR stuff
 """
 import subprocess
-import logging
 import os
 import sys
 import ssl
@@ -72,7 +71,8 @@ def create_client_context(protocol=ssl.PROTOCOL_TLS_CLIENT,
                 try:
                     ctx.load_verify_locations(ca_cert, ca_path, ca_data)
                 except Exception as e:
-                    logging.exception("Exception occured loading CA certs")
+                    print("Exception occured loading CA certs")
+                    print(e)
             else:
                 ctx.load_default_certs()
         else: 
@@ -82,9 +82,7 @@ def create_client_context(protocol=ssl.PROTOCOL_TLS_CLIENT,
             ctx.load_cert_chain(certfile, keyfile)     
         return ctx
         
-def create_server_context(protocol=ssl.PROTOCOL_TLS_SERVER,
-        certfile=None,
-        keyfile=None):
+def create_server_context(protocol=ssl.PROTOCOL_TLS_SERVER, certfile=None, keyfile=None):
         """Create SSL context for server sockets
         
         Arguments can be passed to initialization functions as **kwargs,
@@ -151,7 +149,7 @@ def create_cert_key(cert="ca.crt", key="private.key", keysize=4096, days=365, **
 
     proc = subprocess.run(cmd)
     if proc.returncode != 0:
-        logging.error("Error generating cert/private key")
+        print("Error generating cert/private key")
         return None
         
     return os.path.abspath(cert), os.path.abspath(key)

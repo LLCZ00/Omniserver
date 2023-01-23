@@ -24,7 +24,6 @@ TODO:
 """   
 import socket
 import http.client
-import logging
 import struct
 import os
 from time import sleep
@@ -48,6 +47,7 @@ class BaseClientHandler:
     The send/recv and send_data/recv_data methods are seperated so as to easily 
     allow for bypassing the incoming/outgoing filter methods, if necessary
     """
+    verbose = True
     def __init__(self, remote_addr: tuple, socket=None):
         self.remote_addr = remote_addr
         self.sock = socket     
@@ -123,7 +123,8 @@ class TCPClient(BaseClientHandler):
         if not self.connected:
             raise Exception("Not connected to remote server")
         data = self.incoming(self.sock.recv(buffer))
-        logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Data recieved: {data}")
+        if data and self.verbose:
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Data recieved: {data}")
         return data
         
     def send(self, data):
@@ -134,7 +135,8 @@ class TCPClient(BaseClientHandler):
         if not self.connected:
             raise Exception("Not connected to remote server")
         self.sock.sendall(self.outgoing(data))
-        logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Data sent.")
+        if self.verbose:
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Data sent.")
         
     def connect(self):
         """Attempt to connect to remote address
@@ -146,10 +148,10 @@ class TCPClient(BaseClientHandler):
         try:
             self.sock.connect(self.remote_addr)
         except:
-            logging.error(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Failed to establish TCP connection.")
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Failed to establish TCP connection.")
             return False
         else:
-            logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] TCP connection established.")
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] TCP connection established.")
             self.connected = True
             return True
         
@@ -170,7 +172,7 @@ class TCPClient(BaseClientHandler):
         try:
             self.sock = context.wrap_socket(self.sock, server_side=False, server_hostname=server_hostname)
         except Exception as e:
-            logging.exception("TLS/SSL failed.")
+            print("TLS/SSL failed.")
             raise e    
         return True
             
@@ -227,9 +229,10 @@ class UDPClient(BaseClientHandler):
         try:
             data = self.incoming(self.sock.recv(buffer))
         except:
-            logging.error("Unable to reach remote server")
+            print("Unable to reach remote server")
             return None
-        logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] UDP data recieved: {data}")
+        if data and self.verbose:
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] UDP data recieved: {data}")
         return data
         
     def send(self, data):
@@ -240,7 +243,8 @@ class UDPClient(BaseClientHandler):
         :param data: Data to be sent to remote socket
         """
         self.sock.sendto(self.outgoing(data), self.remote_addr)
-        logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Data sent.")
+        if self.verbose:
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] Data sent.")
         
     def beacon(self, msg="Beacon message", freq=5, tries=0, timeout=None):
         """Periodically attempt to connect to remote socket
@@ -273,6 +277,7 @@ class DNSClientMixIn:
     
     Overrides incoming() and outgoing() methods, adds query() method
     """
+    verbose = True
     def incoming(self, data):
         """
         Process incoming data as it's recieved from remote server
@@ -307,7 +312,9 @@ class DNSClientMixIn:
         """
         query = DNSRecord.question(domain, qtype=record_type)
         self.send(query)
-        return self.recv()
+        response = self.recv()
+        if response and self.verbose:
+            print(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] DNS response: {response}")
         
         
 class DNSClientTCP(DNSClientMixIn, TCPClient):
@@ -331,8 +338,7 @@ class DNSClientTCP(DNSClientMixIn, TCPClient):
             raise Exception("Wrong size of TCP packet")
         elif sz > len(data) - 2:
             raise Exception("Too big TCP packet")
-        response = self.incoming(data[2:])
-        logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] DNS response:")
+        return self.incoming(data[2:])
         
     def send(self, resp):
         """
@@ -344,7 +350,6 @@ class DNSClientTCP(DNSClientMixIn, TCPClient):
         data = self.outgoing(resp)
         sz = struct.pack('>H', len(data))
         self.sock.sendall(sz + data)
-        logging.info(f"[{self.remote_addr[0]}:{self.remote_addr[1]}] DNS query sent.")
 
 
 class DNSClient(DNSClientMixIn, UDPClient):
@@ -355,7 +360,28 @@ class DNSClient(DNSClientMixIn, UDPClient):
     functionality by inheriting DNSClientMixIn.
     Inherits socket-specific functionality from UDPClient
     """
-    pass
+    def recv(self, buffer=1024):
+        """Protocol specific method for recieving data from remote socket
+        
+        :param buffer: Size of recieve buffer
+        :type buffer: int
+        :returns data: Data recieved, after being processed through self.incoming()
+        """
+        try:
+            data = self.incoming(self.sock.recv(buffer))
+        except:
+            print("Unable to reach remote server")
+            return None
+        return data
+        
+    def send(self, data):
+        """Protocol specific method for sending data to remote socket
+        
+        Sends data after it's been passed through self.outgoing()
+        
+        :param data: Data to be sent to remote socket
+        """
+        self.sock.sendto(self.outgoing(data), self.remote_addr)
 
 
 class HTTPClient(http.client.HTTPConnection):
@@ -365,6 +391,7 @@ class HTTPClient(http.client.HTTPConnection):
     Subclass of http.client.HTTPConnection
     """
     proto = "HTTP"
+    verbose = True
     def __init__(self, remote_addr, dir=None):
         super().__init__(host=remote_addr[0], port=remote_addr[1], timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, blocksize=8192)
         self.dir = dir if dir else os.getcwd()
@@ -404,7 +431,8 @@ class HTTPClient(http.client.HTTPConnection):
         """
         self._send_request("GET", url, body, headers, encode_chunked) # http.client.HTTPConnection
         resp = self.getresponse()
-        logging.info(f"{self} request: 'GET {url}' -> {resp.getcode()}")
+        if self.verbose:
+            print(f"{self} request: 'GET {url}' -> {resp.getcode()}")
         self.incoming(url, resp)
         return resp.getcode()
         
@@ -421,7 +449,8 @@ class HTTPClient(http.client.HTTPConnection):
         """
         self._send_request("POST", url, body, headers, encode_chunked) # http.client.HTTPConnection
         resp = self.getresponse()
-        logging.info(f"{self} request: 'POST {url}' -> {resp.getcode()}")
+        if self.verbose:
+            print(f"{self} request: 'POST {url}' -> {resp.getcode()}")
         return resp.getcode()
         
     def connect(self):
@@ -466,7 +495,7 @@ class HTTPClient(http.client.HTTPConnection):
         try:
             self.sock = context.wrap_socket(self.sock, server_side=False, server_hostname=self.hostname)
         except Exception as e:
-            logging.exception("TLS/SSL failed.")
+            print("TLS/SSL failed.")
             raise e
         
         self.context = context

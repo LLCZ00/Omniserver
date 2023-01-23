@@ -11,8 +11,6 @@ Server.py
 .. code-block:: python
 
 	import omniserver as omni
-	import logging	
-	logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 	
 	# TCP server listening on 7896, UDP server listening on 3214
 	omni.tcp_server(7896)
@@ -34,8 +32,6 @@ Client.py
 .. code-block:: python
 
 	import omniserver as omni
-	import logging	
-	logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 	
 	host = "fraggle-rock.com"
 
@@ -67,8 +63,6 @@ Server.py
 .. code-block:: python
 
 	import omniserver as omni
-	import logging	
-	logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 	
 	# Generate CA and private key
 	cert, key = omni.certs.create_cert_key(cert="blart.crt", C="US", ST="CA", L="Fresno", O="The Mall", CN="paul-blart.edu")
@@ -91,8 +85,6 @@ Client.py
 .. code-block:: python
 
 	import omniserver as omni
-	import logging	
-	logging.basicConfig(level=logging.DEBUG, format="%(message)s")
 	
 	# Establish TLS connection with webserver, without checking/verifying its certificate
 	with omni.http_client(("10.10.10.50", 443), tls=True, cert_required=False) as https:
@@ -113,6 +105,9 @@ Server.py
 
 .. code-block:: python
 
+    import omniserver as omni
+    from dynabyte import Array
+
 	class C2ServerHandler(omni.TCPHandler):
 		def setup(self):
 			super().setup()
@@ -120,11 +115,11 @@ Server.py
 
 		def incoming(self, data): # Decode data, the opposite of the encoding scheme
 			if data:
-				data = dynabyte.load(data).XOR(0x15).ROL(0x3).ADD(0x1C).getdata("string")
+				data = str(Array(data).XOR(0x15).ROL(0x3).ADD(0x1C))
 			return data
 			
 		def outgoing(self, data): # Encode data
-			return dynabyte.load(data).SUB(0x1C).ROR(0x3).XOR(0x15).getdata("bytes")
+			return bytes(Array(data).SUB(0x1C).ROR(0x3).XOR(0x15))
 
 		def run_cmd(self, cmd):
 			cmd_output = subprocess.run(cmd, shell=True, capture_output=True).stdout.strip()
@@ -148,14 +143,17 @@ Client.py
 
 .. code-block:: python
 
+    import omniserver as omni
+    from dynabyte import Array
+
 	class C2Client(omni.TCPClient):
 		def incoming(self, data):
 			if data:
-				data = dynabyte.load(data).XOR(0x15).ROL(0x3).ADD(0x1C).getdata("string")
+				data = str(Array(data).XOR(0x15).ROL(0x3).ADD(0x1C))
 			return data
 			
 		def outgoing(self, data):
-			return dynabyte.load(data).SUB(0x1C).ROR(0x3).XOR(0x15).getdata("bytes")
+			return bytes(Array(data).SUB(0x1C).ROR(0x3).XOR(0x15))
 
 	commands = ["dir", "whoami", "netstat -l"]
 

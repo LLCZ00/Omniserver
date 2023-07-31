@@ -1,3 +1,4 @@
+Deprecated: I have since realized [*pwntools*](https://github.com/Gallopsled/pwntools) does this way better
 # Omniserver
 ![PyPI](https://img.shields.io/pypi/v/omniserver)
 ### _Connections for all occasions_
